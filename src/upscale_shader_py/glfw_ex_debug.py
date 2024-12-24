@@ -11,108 +11,141 @@ SHADER_DIR = BASE_RESOURCE.joinpath("shaders")
 
 
 def load_shader(vertex_path, fragment_path):
+    """Load and compile vertex and fragment shaders from files."""
     with open(vertex_path, 'r') as v_file, open(fragment_path, 'r') as f_file:
         vertex_src = v_file.read()
         fragment_src = f_file.read()
 
-    # Compile shaders
-    vertex_shader = compileShader(vertex_src, GL_VERTEX_SHADER)
-    if glGetShaderiv(vertex_shader, GL_COMPILE_STATUS) != GL_TRUE:
-        print(f"Vertex Shader compile failed: {glGetShaderInfoLog(vertex_shader)}")
+    try:
+        # Compile shaders
+        vertex_shader = compileShader(vertex_src, GL_VERTEX_SHADER)
+        fragment_shader = compileShader(fragment_src, GL_FRAGMENT_SHADER)
 
-    fragment_shader = compileShader(fragment_src, GL_FRAGMENT_SHADER)
-    if glGetShaderiv(fragment_shader, GL_COMPILE_STATUS) != GL_TRUE:
-        print(f"Fragment Shader compile failed: {glGetShaderInfoLog(fragment_shader)}")
+        # Check if shaders compiled successfully
+        if not vertex_shader or not fragment_shader:
+            raise RuntimeError("Shader compilation failed")
 
-    shader_program = compileProgram(vertex_shader, fragment_shader)
-    if glGetProgramiv(shader_program, GL_LINK_STATUS) != GL_TRUE:
-        print(f"Program Link failed: {glGetProgramInfoLog(shader_program)}")
+        # Link shaders into a program
+        shader_program = compileProgram(vertex_shader, fragment_shader)
+        return shader_program
 
-    return shader_program
+    except Exception as e:
+        print(f"Error loading shader: {e}")
+        return None
 
 
 def create_texture(image_path):
     """Load an image into an OpenGL texture."""
-    image = Image.open(image_path).convert("RGBA")
-    image_data = np.array(image, dtype=np.uint8)
-    width, height = image.size
+    try:
+        image = Image.open(image_path).convert("RGBA")
+        image_data = np.array(image, dtype=np.uint8)
+        width, height = image.size
 
-    texture = glGenTextures(1)
-    glBindTexture(GL_TEXTURE_2D, texture)
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, image_data)
+        if width == 0 or height == 0:
+            raise ValueError("Texture image has no width or height.")
 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        texture = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, texture)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, image_data)
 
-    return texture, width, height
+        # Set texture parameters
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+
+        return texture, width, height
+    except Exception as e:
+        print(f"Error loading texture: {e}")
+        return None, 0, 0
 
 
-def main(input_image_path, vertex_shader_path, fragment_shader_path, output_image_path):
+def main(input_image_path, vertex_shader_path, fragment_shader_path):
+    """Process an image using shaders and display it in the window."""
+    # Initialize GLFW
     if not glfw.init():
         raise Exception("GLFW could not be initialized")
 
+    # Create a windowed mode window and its OpenGL context
     window = glfw.create_window(800, 600, "Offscreen Rendering", None, None)
     if not window:
         glfw.terminate()
         raise Exception("GLFW window could not be created")
 
+    # Make the window's context current
     glfw.make_context_current(window)
 
+    # Load the shaders
     shader_program = load_shader(vertex_shader_path, fragment_shader_path)
+    if not shader_program:
+        glfw.terminate()
+        return
+
+    # Create a texture from the input image
     texture, width, height = create_texture(input_image_path)
+    if texture is None:
+        glfw.terminate()
+        return
 
-    fbo = glGenFramebuffers(1)
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo)
+    # Define vertices and texture coordinates for a fullscreen quad
+    vertices = np.array([
+        -1.0, -1.0, 0.0, 0.0,  # Bottom-left (position, texCoord)
+         1.0, -1.0, 1.0, 0.0,  # Bottom-right
+         1.0,  1.0, 1.0, 1.0,  # Top-right
+        -1.0,  1.0, 0.0, 1.0   # Top-left
+    ], dtype=np.float32)
 
-    output_texture = glGenTextures(1)
-    glBindTexture(GL_TEXTURE_2D, output_texture)
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, None)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+    # Create the VBO and VAO
+    vao = glGenVertexArrays(1)
+    vbo = glGenBuffers(1)
 
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, output_texture, 0)
+    glBindVertexArray(vao)
+    glBindBuffer(GL_ARRAY_BUFFER, vbo)
+    glBufferData(GL_ARRAY_BUFFER, vertices.nbytes, vertices, GL_STATIC_DRAW)
 
-    if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
-        raise RuntimeError("Framebuffer is not complete")
+    # Position attribute
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * 4, ctypes.c_void_p(0))
+    glEnableVertexAttribArray(0)
 
-    glClearColor(0.0, 0.0, 0.0, 1.0)
-    glClear(GL_COLOR_BUFFER_BIT)
+    # Texture coordinate attribute
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * 4, ctypes.c_void_p(2 * 4))
+    glEnableVertexAttribArray(1)
 
-    glViewport(0, 0, width, height)
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo)
+    # Unbind the VBO and VAO
+    glBindBuffer(GL_ARRAY_BUFFER, 0)
+    glBindVertexArray(0)
+
+    # Set the viewport
+    glViewport(0, 0, 800, 600)
+
+    # Use the shader program
     glUseProgram(shader_program)
 
+    # Bind the input texture
     glActiveTexture(GL_TEXTURE0)
     glBindTexture(GL_TEXTURE_2D, texture)
     glUniform1i(glGetUniformLocation(shader_program, "input_texture"), 0)
 
-    glBegin(GL_QUADS)
-    glTexCoord2f(0.0, 0.0)
-    glVertex2f(-1.0, -1.0)
-    glTexCoord2f(1.0, 0.0)
-    glVertex2f(1.0, -1.0)
-    glTexCoord2f(1.0, 1.0)
-    glVertex2f(1.0, 1.0)
-    glTexCoord2f(0.0, 1.0)
-    glVertex2f(-1.0, 1.0)
-    glEnd()
+    while not glfw.window_should_close(window):
+        # Clear the screen to black
+        glClear(GL_COLOR_BUFFER_BIT)
 
-    result = glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE)
+        # Bind the VAO and draw the quad
+        glBindVertexArray(vao)
+        glDrawArrays(GL_QUADS, 0, 4)
+        glBindVertexArray(0)
 
-    output_image = Image.fromarray(np.frombuffer(result, dtype=np.uint8).reshape((height, width, 4)))
-    output_image = output_image.transpose(Image.FLIP_TOP_BOTTOM)
-    output_image.save(output_image_path)
+        # Swap buffers and poll events
+        glfw.swap_buffers(window)
+        glfw.poll_events()
 
-    glDeleteTextures([texture, output_texture])
-    glDeleteFramebuffers(1, [fbo])
+    # Clean up
+    glDeleteTextures([texture])
     glUseProgram(0)
     glfw.terminate()
 
 
 if __name__ == "__main__":
     input_image = IMG_DIR.joinpath("dicom_test-img-source.png")
-    vertex_shader = SHADER_DIR.joinpath("vertex_shader.glsl")
-    fragment_shader = SHADER_DIR.joinpath("fragment_shader.glsl")
-    output_image = IMG_DIR.joinpath("output.png")
+    vertex_shader = SHADER_DIR.joinpath("texture_vertex.glsl")
+    fragment_shader = SHADER_DIR.joinpath("texture_fragment.glsl")
 
-    main(input_image, vertex_shader, fragment_shader, output_image)
+    main(input_image, vertex_shader, fragment_shader)
